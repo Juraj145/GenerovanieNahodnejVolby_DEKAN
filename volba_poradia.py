@@ -4,16 +4,60 @@ Voľba poradia vystúpenia kandidátov na dekana.
 
 Program umožňuje:
   - zadať kandidátov na dekana (meno, priezvisko, titul/y),
+  - uložiť a znova načítať zoznam kandidátov (a znova vygenerovať poradie),
   - vyzve kandidátov, aby v abecednom poradí pristúpili,
   - po stlačení tlačidla sa spustí generovanie (náhodné losovanie poradia),
-  - po opätovnom stlačení sa generovanie ukončí a zobrazí sa výsledné poradie.
+  - po opätovnom stlačení sa generovanie ukončí a zobrazí sa výsledné poradie,
+  - pri spustení skontroluje, či je dostupná novšia verzia, a ponúkne aktualizáciu.
 
 Podmienka: kandidáti musia byť minimálne dvaja.
 """
 
+import json
+import os
 import random
+import subprocess
+import sys
+import tempfile
+import threading
+import urllib.request
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import filedialog, messagebox, ttk
+
+APP_VERSION = "1.1.0"
+
+REPO_OWNER = "Juraj145"
+REPO_NAME = "GenerovanieNahodnejVolby_DEKAN"
+VERSION_URL = f"https://raw.githubusercontent.com/{REPO_OWNER}/{REPO_NAME}/main/VERSION"
+INSTALLER_URL = (
+    f"https://github.com/{REPO_OWNER}/{REPO_NAME}/releases/latest/download/"
+    "VolbaPoradiaDekana_Setup.exe"
+)
+
+
+def resource_path(nazov: str) -> str:
+    """Cesta k priloženému súboru (funguje aj v PyInstaller .exe)."""
+    zaklad = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(zaklad, nazov)
+
+
+def data_dir() -> str:
+    """Priečinok na automatické ukladanie údajov používateľa."""
+    zaklad = os.environ.get("APPDATA") or os.path.expanduser("~")
+    cesta = os.path.join(zaklad, "GNV_DEKAN")
+    os.makedirs(cesta, exist_ok=True)
+    return cesta
+
+
+AUTOSAVE_SUBOR = os.path.join(data_dir(), "kandidati.json")
+
+
+def verzia_na_n_ticu(verzia: str):
+    cisla = []
+    for cast in verzia.strip().lstrip("vV").split("."):
+        digits = "".join(ch for ch in cast if ch.isdigit())
+        cisla.append(int(digits) if digits else 0)
+    return tuple(cisla)
 
 
 class Kandidat:
@@ -34,15 +78,27 @@ class Kandidat:
         # Abecedné poradie podľa priezviska, potom mena
         return (self.priezvisko.lower(), self.meno.lower())
 
+    def to_dict(self) -> dict:
+        return {"meno": self.meno, "priezvisko": self.priezvisko, "tituly": self.tituly}
+
+    @staticmethod
+    def from_dict(d: dict) -> "Kandidat":
+        return Kandidat(d.get("meno", ""), d.get("priezvisko", ""), d.get("tituly", ""))
+
 
 class Aplikacia(tk.Tk):
     INTERVAL_MS = 80  # rýchlosť premiešavania počas generovania
 
     def __init__(self):
         super().__init__()
-        self.title("Voľba poradia vystúpenia kandidátov na dekana")
-        self.geometry("780x620")
-        self.minsize(680, 560)
+        self.title(f"Voľba poradia vystúpenia kandidátov na dekana  (v{APP_VERSION})")
+        self.geometry("820x680")
+        self.minsize(700, 600)
+
+        try:
+            self.iconbitmap(resource_path("app.ico"))
+        except Exception:
+            pass
 
         self.kandidati: list[Kandidat] = []
         self.generuje_sa = False
@@ -51,6 +107,10 @@ class Aplikacia(tk.Tk):
 
         self._vytvor_styl()
         self._vytvor_widgety()
+
+        self._nacitaj_auto()
+        self.protocol("WM_DELETE_WINDOW", self._pri_zatvoreni)
+        self.after(800, self._skontroluj_aktualizacie)
 
     # ------------------------------------------------------------------ UI
     def _vytvor_styl(self):
@@ -120,6 +180,13 @@ class Aplikacia(tk.Tk):
         ttk.Button(ovladanie, text="Vymazať všetkých", command=self.vymaz_vsetkych).pack(
             fill="x", pady=2
         )
+        ttk.Separator(ovladanie, orient="horizontal").pack(fill="x", pady=6)
+        ttk.Button(ovladanie, text="Uložiť kandidátov…", command=self.uloz_kandidatov).pack(
+            fill="x", pady=2
+        )
+        ttk.Button(ovladanie, text="Načítať kandidátov…", command=self.nacitaj_kandidatov).pack(
+            fill="x", pady=2
+        )
 
         # --- Výzva ---
         self.l_vyzva = ttk.Label(
@@ -169,6 +236,7 @@ class Aplikacia(tk.Tk):
         self.e_priezvisko.delete(0, "end")
         self.e_tituly.focus_set()
         self._obnov_zoznam()
+        self._uloz_auto()
 
     def odstran_kandidata(self):
         if self.generuje_sa:
@@ -181,6 +249,7 @@ class Aplikacia(tk.Tk):
         cil = zoradeni[index]
         self.kandidati.remove(cil)
         self._obnov_zoznam()
+        self._uloz_auto()
 
     def vymaz_vsetkych(self):
         if self.generuje_sa:
@@ -190,12 +259,86 @@ class Aplikacia(tk.Tk):
         if messagebox.askyesno("Vymazať", "Naozaj vymazať všetkých kandidátov?"):
             self.kandidati.clear()
             self._obnov_zoznam()
+            self._uloz_auto()
 
     def _obnov_zoznam(self):
         self.lb_kandidati.delete(0, "end")
         for k in sorted(self.kandidati, key=Kandidat.kluc_abecedne):
             self.lb_kandidati.insert("end", k.cele_meno())
 
+    # ------------------------------------------------- ukladanie / načítanie
+    def uloz_kandidatov(self):
+        if not self.kandidati:
+            messagebox.showinfo("Uložiť", "Najprv pridajte aspoň jedného kandidáta.")
+            return
+        cesta = filedialog.asksaveasfilename(
+            title="Uložiť kandidátov",
+            defaultextension=".json",
+            filetypes=[("Súbor kandidátov", "*.json"), ("Všetky súbory", "*.*")],
+            initialfile="kandidati.json",
+        )
+        if not cesta:
+            return
+        try:
+            self._zapis_subor(cesta)
+            messagebox.showinfo("Uložené", f"Kandidáti boli uložení do:\n{cesta}")
+        except OSError as e:
+            messagebox.showerror("Chyba", f"Súbor sa nepodarilo uložiť:\n{e}")
+
+    def nacitaj_kandidatov(self):
+        if self.generuje_sa:
+            return
+        cesta = filedialog.askopenfilename(
+            title="Načítať kandidátov",
+            filetypes=[("Súbor kandidátov", "*.json"), ("Všetky súbory", "*.*")],
+        )
+        if not cesta:
+            return
+        try:
+            self._citaj_subor(cesta)
+        except (OSError, ValueError, json.JSONDecodeError) as e:
+            messagebox.showerror("Chyba", f"Súbor sa nepodarilo načítať:\n{e}")
+            return
+        self._obnov_zoznam()
+        self._uloz_auto()
+        messagebox.showinfo(
+            "Načítané", f"Načítaných {len(self.kandidati)} kandidátov. Môžete znova vygenerovať poradie."
+        )
+
+    def _zapis_subor(self, cesta: str):
+        data = {"verzia": APP_VERSION, "kandidati": [k.to_dict() for k in self.kandidati]}
+        with open(cesta, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+
+    def _citaj_subor(self, cesta: str):
+        with open(cesta, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        zoznam = data.get("kandidati", []) if isinstance(data, dict) else data
+        self.kandidati = [
+            Kandidat.from_dict(d)
+            for d in zoznam
+            if d.get("meno") and d.get("priezvisko")
+        ]
+
+    def _uloz_auto(self):
+        try:
+            self._zapis_subor(AUTOSAVE_SUBOR)
+        except OSError:
+            pass
+
+    def _nacitaj_auto(self):
+        if os.path.exists(AUTOSAVE_SUBOR):
+            try:
+                self._citaj_subor(AUTOSAVE_SUBOR)
+                self._obnov_zoznam()
+            except (OSError, ValueError, json.JSONDecodeError):
+                pass
+
+    def _pri_zatvoreni(self):
+        self._uloz_auto()
+        self.destroy()
+
+    # ------------------------------------------------------- generovanie
     def prepni_generovanie(self):
         if not self.generuje_sa:
             self._spusti_generovanie()
@@ -249,6 +392,54 @@ class Aplikacia(tk.Tk):
         for i, k in enumerate(poradie, start=1):
             self.txt_vysledok.insert("end", f"{i}. {k.cele_meno()}\n")
         self.txt_vysledok.config(state="disabled")
+
+    # ------------------------------------------------------- aktualizácia
+    def _skontroluj_aktualizacie(self):
+        def worker():
+            try:
+                req = urllib.request.Request(
+                    VERSION_URL, headers={"Cache-Control": "no-cache"}
+                )
+                with urllib.request.urlopen(req, timeout=6) as r:
+                    vzdialena = r.read().decode("utf-8").strip()
+                if vzdialena and verzia_na_n_ticu(vzdialena) > verzia_na_n_ticu(APP_VERSION):
+                    self.after(0, lambda: self._ponukni_aktualizaciu(vzdialena))
+            except Exception:
+                pass  # bez internetu jednoducho pokračujeme
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _ponukni_aktualizaciu(self, vzdialena: str):
+        if messagebox.askyesno(
+            "Dostupná aktualizácia",
+            f"Je dostupná novšia verzia {vzdialena} (máte {APP_VERSION}).\n\n"
+            "Chcete ju teraz stiahnuť a nainštalovať?",
+        ):
+            self._stiahni_a_instaluj()
+
+    def _stiahni_a_instaluj(self):
+        self.l_vyzva.config(text="Sťahujem aktualizáciu, čakajte prosím...", foreground="#b30000")
+
+        def worker():
+            try:
+                ciel = os.path.join(tempfile.gettempdir(), "VolbaPoradiaDekana_Setup.exe")
+                urllib.request.urlretrieve(INSTALLER_URL, ciel)
+                self.after(0, lambda: self._spusti_instalator(ciel))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror(
+                    "Chyba aktualizácie",
+                    f"Aktualizáciu sa nepodarilo stiahnuť:\n{e}",
+                ))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _spusti_instalator(self, cesta: str):
+        try:
+            self._uloz_auto()
+            subprocess.Popen([cesta])
+            self.destroy()
+        except OSError as e:
+            messagebox.showerror("Chyba", f"Inštalátor sa nepodarilo spustiť:\n{e}")
 
 
 def main():
