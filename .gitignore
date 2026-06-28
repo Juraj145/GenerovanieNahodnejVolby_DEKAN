@@ -3,6 +3,9 @@ build/
 dist/
 *.spec
 
+# Inno Setup výstup
+installer_out/
+
 # Python
 __pycache__/
 *.pyc

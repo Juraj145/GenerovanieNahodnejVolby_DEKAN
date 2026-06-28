@@ -15,9 +15,12 @@ echo Instalujem PyInstaller (ak chyba)...
 "%PYTHON%" -m pip install --quiet pyinstaller
 
 echo Zostavujem .exe ...
-"%PYTHON%" -m PyInstaller --noconfirm --onefile --windowed --name "VolbaPoradiaDekana" volba_poradia.py
+"%PYTHON%" -m PyInstaller --noconfirm --onefile --windowed --icon app.ico --add-data "app.ico;." --name "VolbaPoradiaDekana" volba_poradia.py
 
 echo.
 echo Hotovo. Novy subor najdes v: dist\VolbaPoradiaDekana.exe
+echo.
+echo (Volitelne) Pre zostavenie instalatora nainstaluj Inno Setup a spusti:
+echo   "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
 pause
 endlocal
