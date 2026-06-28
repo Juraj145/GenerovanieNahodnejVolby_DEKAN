@@ -41,7 +41,7 @@ def ssl_kontext() -> ssl.SSLContext:
     return ssl.create_default_context()
 
 
-APP_VERSION = "1.3.1"
+APP_VERSION = "1.4.0"
 
 REPO_OWNER = "Juraj145"
 REPO_NAME = "GenerovanieNahodnejVolby_DEKAN"
