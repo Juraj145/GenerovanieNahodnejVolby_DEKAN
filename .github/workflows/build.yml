@@ -4,6 +4,9 @@ on:
   push:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: windows-latest
@@ -26,3 +29,11 @@ jobs:
         with:
           name: VolbaPoradiaDekana
           path: dist/VolbaPoradiaDekana.exe
+
+      - name: Publish to Release (latest)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Najnovšia verzia (.exe)
+          files: dist/VolbaPoradiaDekana.exe
