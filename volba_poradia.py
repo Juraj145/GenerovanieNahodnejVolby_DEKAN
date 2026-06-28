@@ -16,6 +16,8 @@ Podmienka: kandidáti musia byť minimálne dvaja.
 import json
 import os
 import random
+import shutil
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -24,7 +26,20 @@ import urllib.request
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-APP_VERSION = "1.1.0"
+try:
+    import certifi
+    _CA_SUBOR = certifi.where()
+except Exception:
+    _CA_SUBOR = None
+
+
+def ssl_kontext() -> ssl.SSLContext:
+    """SSL kontext s overením certifikátov (certifi balík kvôli Windows)."""
+    if _CA_SUBOR:
+        return ssl.create_default_context(cafile=_CA_SUBOR)
+    return ssl.create_default_context()
+
+APP_VERSION = "1.2.0"
 
 REPO_OWNER = "Juraj145"
 REPO_NAME = "GenerovanieNahodnejVolby_DEKAN"
@@ -127,11 +142,17 @@ class Aplikacia(tk.Tk):
         hlavny = ttk.Frame(self, padding=12)
         hlavny.pack(fill="both", expand=True)
 
+        hlavicka = ttk.Frame(hlavny)
+        hlavicka.pack(fill="x")
         ttk.Label(
-            hlavny,
+            hlavicka,
             text="Voľba poradia vystúpenia kandidátov na dekana",
             style="Nadpis.TLabel",
-        ).pack(anchor="w")
+        ).pack(side="left", anchor="w")
+        self.b_aktualizovat = ttk.Button(
+            hlavicka, text="Aktualizovať program", command=self.aktualizuj_rucne
+        )
+        self.b_aktualizovat.pack(side="right")
 
         # --- Formulár na zadanie kandidáta ---
         formular = ttk.LabelFrame(hlavny, text="Zadanie kandidáta", padding=10)
@@ -394,20 +415,65 @@ class Aplikacia(tk.Tk):
         self.txt_vysledok.config(state="disabled")
 
     # ------------------------------------------------------- aktualizácia
+    def _zisti_vzdialenu_verziu(self) -> str:
+        req = urllib.request.Request(VERSION_URL, headers={"Cache-Control": "no-cache"})
+        with urllib.request.urlopen(req, timeout=6, context=ssl_kontext()) as r:
+            return r.read().decode("utf-8").strip()
+
     def _skontroluj_aktualizacie(self):
         def worker():
             try:
-                req = urllib.request.Request(
-                    VERSION_URL, headers={"Cache-Control": "no-cache"}
-                )
-                with urllib.request.urlopen(req, timeout=6) as r:
-                    vzdialena = r.read().decode("utf-8").strip()
+                vzdialena = self._zisti_vzdialenu_verziu()
                 if vzdialena and verzia_na_n_ticu(vzdialena) > verzia_na_n_ticu(APP_VERSION):
                     self.after(0, lambda: self._ponukni_aktualizaciu(vzdialena))
             except Exception:
                 pass  # bez internetu jednoducho pokračujeme
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def aktualizuj_rucne(self):
+        """Manuálna aktualizácia po stlačení tlačidla „Aktualizovať program"."""
+        self.b_aktualizovat.config(state="disabled")
+        self.l_vyzva.config(
+            text="Kontrolujem dostupnosť aktualizácie...", foreground="#b30000"
+        )
+
+        def worker():
+            try:
+                vzdialena = self._zisti_vzdialenu_verziu()
+            except Exception:
+                vzdialena = None
+            self.after(0, lambda: self._po_rucnej_kontrole(vzdialena))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _po_rucnej_kontrole(self, vzdialena):
+        self.b_aktualizovat.config(state="normal")
+        self.l_vyzva.config(
+            text="Vážení kandidáti, prosím pristúpte v abecednom poradí podľa priezviska.",
+            foreground="#0a4",
+        )
+        if not vzdialena:
+            messagebox.showerror(
+                "Aktualizácia",
+                "Nepodarilo sa overiť aktualizáciu.\n"
+                "Skontrolujte pripojenie na internet a skúste znova.",
+            )
+            return
+        if verzia_na_n_ticu(vzdialena) > verzia_na_n_ticu(APP_VERSION):
+            if messagebox.askyesno(
+                "Dostupná aktualizácia",
+                f"Je dostupná novšia verzia {vzdialena} (máte {APP_VERSION}).\n\n"
+                "Stiahnuť a nainštalovať teraz?",
+            ):
+                self._stiahni_a_instaluj()
+        else:
+            if messagebox.askyesno(
+                "Aktuálna verzia",
+                f"Máte najnovšiu verziu ({APP_VERSION}).\n\n"
+                "Chcete aj tak znova prevziať a nainštalovať najnovšiu verziu?",
+            ):
+                self._stiahni_a_instaluj()
 
     def _ponukni_aktualizaciu(self, vzdialena: str):
         if messagebox.askyesno(
@@ -423,7 +489,10 @@ class Aplikacia(tk.Tk):
         def worker():
             try:
                 ciel = os.path.join(tempfile.gettempdir(), "VolbaPoradiaDekana_Setup.exe")
-                urllib.request.urlretrieve(INSTALLER_URL, ciel)
+                with urllib.request.urlopen(
+                    INSTALLER_URL, timeout=120, context=ssl_kontext()
+                ) as resp, open(ciel, "wb") as f:
+                    shutil.copyfileobj(resp, f)
                 self.after(0, lambda: self._spusti_instalator(ciel))
             except Exception as e:
                 self.after(0, lambda: messagebox.showerror(
