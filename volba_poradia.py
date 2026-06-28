@@ -3,11 +3,12 @@
 Voľba poradia vystúpenia kandidátov na dekana.
 
 Program umožňuje:
-  - zadať kandidátov na dekana (meno, priezvisko, titul/y),
-  - uložiť a znova načítať zoznam kandidátov (a znova vygenerovať poradie),
+  - zadať kandidátov na dekana (titul(y) pred menom, meno, priezvisko, titul(y) za priezviskom),
+  - uložiť a znova načítať zoznam kandidátov,
   - vyzve kandidátov, aby v abecednom poradí pristúpili,
-  - po stlačení tlačidla sa spustí generovanie (náhodné losovanie poradia),
-  - po opätovnom stlačení sa generovanie ukončí a zobrazí sa výsledné poradie,
+  - žrebovanie poradia po jednotlivých kandidátoch: každý kandidát stlačí ENTER
+    alebo medzerník na spustenie losovania svojej pozície a opätovným stlačením
+    ENTER/medzerníka losovanie zastaví a vylosuje sa mu poradové číslo,
   - pri spustení skontroluje, či je dostupná novšia verzia, a ponúkne aktualizáciu.
 
 Podmienka: kandidáti musia byť minimálne dvaja.
@@ -39,7 +40,8 @@ def ssl_kontext() -> ssl.SSLContext:
         return ssl.create_default_context(cafile=_CA_SUBOR)
     return ssl.create_default_context()
 
-APP_VERSION = "1.2.0"
+
+APP_VERSION = "1.3.0"
 
 REPO_OWNER = "Juraj145"
 REPO_NAME = "GenerovanieNahodnejVolby_DEKAN"
@@ -76,39 +78,53 @@ def verzia_na_n_ticu(verzia: str):
 
 
 class Kandidat:
-    def __init__(self, meno: str, priezvisko: str, tituly: str = ""):
+    def __init__(self, meno: str, priezvisko: str, tituly_pred: str = "", tituly_za: str = ""):
         self.meno = meno.strip()
         self.priezvisko = priezvisko.strip()
-        self.tituly = tituly.strip()
+        self.tituly_pred = tituly_pred.strip()
+        self.tituly_za = tituly_za.strip()
 
     def cele_meno(self) -> str:
         casti = []
-        if self.tituly:
-            casti.append(self.tituly)
+        if self.tituly_pred:
+            casti.append(self.tituly_pred)
         casti.append(self.meno)
         casti.append(self.priezvisko)
-        return " ".join(casti)
+        text = " ".join(casti)
+        if self.tituly_za:
+            text += f", {self.tituly_za}"
+        return text
 
     def kluc_abecedne(self):
         # Abecedné poradie podľa priezviska, potom mena
         return (self.priezvisko.lower(), self.meno.lower())
 
     def to_dict(self) -> dict:
-        return {"meno": self.meno, "priezvisko": self.priezvisko, "tituly": self.tituly}
+        return {
+            "meno": self.meno,
+            "priezvisko": self.priezvisko,
+            "tituly_pred": self.tituly_pred,
+            "tituly_za": self.tituly_za,
+        }
 
     @staticmethod
     def from_dict(d: dict) -> "Kandidat":
-        return Kandidat(d.get("meno", ""), d.get("priezvisko", ""), d.get("tituly", ""))
+        return Kandidat(
+            d.get("meno", ""),
+            d.get("priezvisko", ""),
+            d.get("tituly_pred", d.get("tituly", "")),  # spätná kompatibilita
+            d.get("tituly_za", ""),
+        )
 
 
 class Aplikacia(tk.Tk):
-    INTERVAL_MS = 80  # rýchlosť premiešavania počas generovania
+    INTERVAL_MS = 70  # rýchlosť striedania čísel počas losovania
 
     def __init__(self):
         super().__init__()
         self.title(f"Voľba poradia vystúpenia kandidátov na dekana  (v{APP_VERSION})")
-        self.geometry("820x680")
-        self.minsize(700, 600)
+        self.geometry("860x740")
+        self.minsize(720, 660)
 
         try:
             self.iconbitmap(resource_path("app.ico"))
@@ -116,12 +132,21 @@ class Aplikacia(tk.Tk):
             pass
 
         self.kandidati: list[Kandidat] = []
-        self.generuje_sa = False
+
+        # stav žrebovania
+        self.volba_aktivna = False
+        self.faza = None  # None | "cakam_start" | "generujem"
         self._job = None
-        self.vysledne_poradie: list[Kandidat] = []
+        self.poradie_kandidatov: list[Kandidat] = []
+        self.aktualny_index = 0
+        self.volne_pozicie: list[int] = []
+        self.priradene: dict[int, int] = {}  # index v poradie_kandidatov -> pozícia
 
         self._vytvor_styl()
         self._vytvor_widgety()
+
+        self.bind("<Return>", self._klaves)
+        self.bind("<space>", self._klaves)
 
         self._nacitaj_auto()
         self.protocol("WM_DELETE_WINDOW", self._pri_zatvoreni)
@@ -137,6 +162,7 @@ class Aplikacia(tk.Tk):
         style.configure("Nadpis.TLabel", font=("Segoe UI", 16, "bold"))
         style.configure("Podnadpis.TLabel", font=("Segoe UI", 10))
         style.configure("Velke.TButton", font=("Segoe UI", 13, "bold"), padding=10)
+        style.configure("Cislo.TLabel", font=("Segoe UI", 30, "bold"), foreground="#1f77b4")
 
     def _vytvor_widgety(self):
         hlavny = ttk.Frame(self, padding=12)
@@ -150,7 +176,7 @@ class Aplikacia(tk.Tk):
             style="Nadpis.TLabel",
         ).pack(side="left", anchor="w")
         self.b_aktualizovat = ttk.Button(
-            hlavicka, text="Aktualizovať program", command=self.aktualizuj_rucne
+            hlavicka, text="Aktualizovať program", command=self.aktualizuj_rucne, takefocus=False
         )
         self.b_aktualizovat.pack(side="right")
 
@@ -158,28 +184,34 @@ class Aplikacia(tk.Tk):
         formular = ttk.LabelFrame(hlavny, text="Zadanie kandidáta", padding=10)
         formular.pack(fill="x", pady=(12, 8))
 
-        ttk.Label(formular, text="Titul(y):").grid(row=0, column=0, sticky="w", padx=4, pady=4)
-        self.e_tituly = ttk.Entry(formular, width=18)
-        self.e_tituly.grid(row=0, column=1, sticky="we", padx=4, pady=4)
+        ttk.Label(formular, text="Titul(y) pred menom:").grid(
+            row=0, column=0, sticky="w", padx=4, pady=4
+        )
+        self.e_tituly_pred = ttk.Entry(formular, width=20)
+        self.e_tituly_pred.grid(row=0, column=1, sticky="we", padx=4, pady=4)
 
         ttk.Label(formular, text="Meno:").grid(row=0, column=2, sticky="w", padx=4, pady=4)
-        self.e_meno = ttk.Entry(formular, width=18)
+        self.e_meno = ttk.Entry(formular, width=20)
         self.e_meno.grid(row=0, column=3, sticky="we", padx=4, pady=4)
 
-        ttk.Label(formular, text="Priezvisko:").grid(row=0, column=4, sticky="w", padx=4, pady=4)
-        self.e_priezvisko = ttk.Entry(formular, width=18)
-        self.e_priezvisko.grid(row=0, column=5, sticky="we", padx=4, pady=4)
+        ttk.Label(formular, text="Priezvisko:").grid(row=1, column=0, sticky="w", padx=4, pady=4)
+        self.e_priezvisko = ttk.Entry(formular, width=20)
+        self.e_priezvisko.grid(row=1, column=1, sticky="we", padx=4, pady=4)
 
-        ttk.Button(formular, text="Pridať kandidáta", command=self.pridaj_kandidata).grid(
-            row=0, column=6, padx=8, pady=4
+        ttk.Label(formular, text="Titul(y) za priezviskom:").grid(
+            row=1, column=2, sticky="w", padx=4, pady=4
         )
+        self.e_tituly_za = ttk.Entry(formular, width=20)
+        self.e_tituly_za.grid(row=1, column=3, sticky="we", padx=4, pady=4)
+
+        self.b_pridaj = ttk.Button(formular, text="Pridať kandidáta", command=self.pridaj_kandidata)
+        self.b_pridaj.grid(row=0, column=4, rowspan=2, padx=8, pady=4, sticky="ns")
+
         formular.columnconfigure(1, weight=1)
         formular.columnconfigure(3, weight=1)
-        formular.columnconfigure(5, weight=1)
 
-        self.e_meno.bind("<Return>", lambda _e: self.pridaj_kandidata())
-        self.e_priezvisko.bind("<Return>", lambda _e: self.pridaj_kandidata())
-        self.e_tituly.bind("<Return>", lambda _e: self.pridaj_kandidata())
+        for e in (self.e_tituly_pred, self.e_meno, self.e_priezvisko, self.e_tituly_za):
+            e.bind("<Return>", self._enter_vo_formulari)
 
         # --- Zoznam kandidátov ---
         zoznam_ramec = ttk.LabelFrame(
@@ -195,19 +227,19 @@ class Aplikacia(tk.Tk):
 
         ovladanie = ttk.Frame(zoznam_ramec, padding=(10, 0))
         ovladanie.pack(side="left", fill="y")
-        ttk.Button(ovladanie, text="Odstrániť vybraného", command=self.odstran_kandidata).pack(
-            fill="x", pady=2
+        self.b_odstran = ttk.Button(
+            ovladanie, text="Odstrániť vybraného", command=self.odstran_kandidata
         )
-        ttk.Button(ovladanie, text="Vymazať všetkých", command=self.vymaz_vsetkych).pack(
-            fill="x", pady=2
-        )
+        self.b_odstran.pack(fill="x", pady=2)
+        self.b_vymaz = ttk.Button(ovladanie, text="Vymazať všetkých", command=self.vymaz_vsetkych)
+        self.b_vymaz.pack(fill="x", pady=2)
         ttk.Separator(ovladanie, orient="horizontal").pack(fill="x", pady=6)
-        ttk.Button(ovladanie, text="Uložiť kandidátov…", command=self.uloz_kandidatov).pack(
-            fill="x", pady=2
+        self.b_uloz = ttk.Button(ovladanie, text="Uložiť kandidátov…", command=self.uloz_kandidatov)
+        self.b_uloz.pack(fill="x", pady=2)
+        self.b_nacitaj = ttk.Button(
+            ovladanie, text="Načítať kandidátov…", command=self.nacitaj_kandidatov
         )
-        ttk.Button(ovladanie, text="Načítať kandidátov…", command=self.nacitaj_kandidatov).pack(
-            fill="x", pady=2
-        )
+        self.b_nacitaj.pack(fill="x", pady=2)
 
         # --- Výzva ---
         self.l_vyzva = ttk.Label(
@@ -218,14 +250,22 @@ class Aplikacia(tk.Tk):
         )
         self.l_vyzva.pack(anchor="w", pady=(4, 6))
 
-        # --- Tlačidlo generovania ---
+        # --- Tlačidlo žrebovania ---
         self.b_generuj = ttk.Button(
             hlavny,
-            text="Spustiť generovanie poradia",
+            text="Spustiť voľbu poradia",
             style="Velke.TButton",
-            command=self.prepni_generovanie,
+            command=self.prepni_volbu,
+            takefocus=False,
         )
         self.b_generuj.pack(fill="x", pady=6)
+
+        # --- Žreb (veľké číslo) ---
+        zreb = ttk.Frame(hlavny)
+        zreb.pack(fill="x")
+        ttk.Label(zreb, text="Vylosované poradové číslo:", style="Podnadpis.TLabel").pack(side="left")
+        self.lbl_cislo = ttk.Label(zreb, text="–", style="Cislo.TLabel")
+        self.lbl_cislo.pack(side="left", padx=12)
 
         # --- Výsledok ---
         vysledok_ramec = ttk.LabelFrame(hlavny, text="Poradie vystúpenia", padding=10)
@@ -237,13 +277,20 @@ class Aplikacia(tk.Tk):
 
         self._obnov_zoznam()
 
-    # -------------------------------------------------------------- logika
+    # -------------------------------------------------------------- kandidáti
+    def _enter_vo_formulari(self, _event):
+        # Enter vo formulári pridá kandidáta (nie ovládanie žrebovania)
+        if not self.volba_aktivna:
+            self.pridaj_kandidata()
+        return "break"
+
     def pridaj_kandidata(self):
-        if self.generuje_sa:
+        if self.volba_aktivna:
             return
         meno = self.e_meno.get().strip()
         priezvisko = self.e_priezvisko.get().strip()
-        tituly = self.e_tituly.get().strip()
+        tituly_pred = self.e_tituly_pred.get().strip()
+        tituly_za = self.e_tituly_za.get().strip()
 
         if not meno or not priezvisko:
             messagebox.showwarning(
@@ -251,16 +298,15 @@ class Aplikacia(tk.Tk):
             )
             return
 
-        self.kandidati.append(Kandidat(meno, priezvisko, tituly))
-        self.e_tituly.delete(0, "end")
-        self.e_meno.delete(0, "end")
-        self.e_priezvisko.delete(0, "end")
-        self.e_tituly.focus_set()
+        self.kandidati.append(Kandidat(meno, priezvisko, tituly_pred, tituly_za))
+        for e in (self.e_tituly_pred, self.e_meno, self.e_priezvisko, self.e_tituly_za):
+            e.delete(0, "end")
+        self.e_tituly_pred.focus_set()
         self._obnov_zoznam()
         self._uloz_auto()
 
     def odstran_kandidata(self):
-        if self.generuje_sa:
+        if self.volba_aktivna:
             return
         vyber = self.lb_kandidati.curselection()
         if not vyber:
@@ -273,7 +319,7 @@ class Aplikacia(tk.Tk):
         self._uloz_auto()
 
     def vymaz_vsetkych(self):
-        if self.generuje_sa:
+        if self.volba_aktivna:
             return
         if not self.kandidati:
             return
@@ -307,7 +353,7 @@ class Aplikacia(tk.Tk):
             messagebox.showerror("Chyba", f"Súbor sa nepodarilo uložiť:\n{e}")
 
     def nacitaj_kandidatov(self):
-        if self.generuje_sa:
+        if self.volba_aktivna:
             return
         cesta = filedialog.askopenfilename(
             title="Načítať kandidátov",
@@ -323,7 +369,8 @@ class Aplikacia(tk.Tk):
         self._obnov_zoznam()
         self._uloz_auto()
         messagebox.showinfo(
-            "Načítané", f"Načítaných {len(self.kandidati)} kandidátov. Môžete znova vygenerovať poradie."
+            "Načítané",
+            f"Načítaných {len(self.kandidati)} kandidátov. Môžete znova spustiť voľbu poradia.",
         )
 
     def _zapis_subor(self, cesta: str):
@@ -359,60 +406,144 @@ class Aplikacia(tk.Tk):
         self._uloz_auto()
         self.destroy()
 
-    # ------------------------------------------------------- generovanie
-    def prepni_generovanie(self):
-        if not self.generuje_sa:
-            self._spusti_generovanie()
-        else:
-            self._zastav_generovanie()
+    # ------------------------------------------------------- žrebovanie
+    def _klaves(self, _event):
+        """ENTER / medzerník ovláda žrebovanie, keď je voľba aktívna."""
+        if self.volba_aktivna:
+            self._stlac()
+            return "break"
+        return None
 
-    def _spusti_generovanie(self):
+    def prepni_volbu(self):
+        if not self.volba_aktivna:
+            self._zacni_volbu()
+        else:
+            self._stlac()
+        self.focus_set()  # aby medzerník neaktivoval tlačidlo
+
+    def _zacni_volbu(self):
         if len(self.kandidati) < 2:
             messagebox.showwarning(
                 "Málo kandidátov",
                 "Kandidáti musia byť minimálne dvaja. Pridajte ešte aspoň jedného.",
             )
             return
+        self.volba_aktivna = True
+        self.poradie_kandidatov = sorted(self.kandidati, key=Kandidat.kluc_abecedne)
+        self.volne_pozicie = list(range(1, len(self.poradie_kandidatov) + 1))
+        self.priradene = {}
+        self.aktualny_index = 0
+        self._zamkni_ovladanie(True)
 
-        self.generuje_sa = True
-        self.b_generuj.config(text="Zastaviť generovanie")
+        self.txt_vysledok.config(state="normal")
+        self.txt_vysledok.delete("1.0", "end")
+        self.txt_vysledok.insert("end", "Priebeh žrebovania:\n")
+        self.txt_vysledok.config(state="disabled")
+
+        self._priprav_kandidata()
+
+    def _priprav_kandidata(self):
+        self.faza = "cakam_start"
+        k = self.poradie_kandidatov[self.aktualny_index]
+        self.lbl_cislo.config(text="?")
         self.l_vyzva.config(
-            text="Prebieha generovanie poradia... Opätovným stlačením tlačidla ho ukončíte.",
+            text=f"Na rade je: {k.cele_meno()}  —  stlačte ENTER alebo medzerník pre spustenie.",
             foreground="#b30000",
         )
-        self._tik()
+        self.b_generuj.config(
+            text=f"{k.cele_meno()}: stlačte ENTER / medzerník pre SPUSTENIE losovania"
+        )
 
-    def _tik(self):
-        if not self.generuje_sa:
+    def _stlac(self):
+        if not self.volba_aktivna:
             return
-        poradie = self.kandidati[:]
-        random.shuffle(poradie)
-        self._zobraz_poradie(poradie, finalne=False)
-        self._job = self.after(self.INTERVAL_MS, self._tik)
+        if self.faza == "cakam_start":
+            self._spusti_losovanie()
+        elif self.faza == "generujem":
+            self._zastav_losovanie()
 
-    def _zastav_generovanie(self):
-        self.generuje_sa = False
+    def _spusti_losovanie(self):
+        self.faza = "generujem"
+        self.l_vyzva.config(
+            text="Prebieha losovanie…  opätovným stlačením ENTER / medzerníka ho zastavíte.",
+            foreground="#b30000",
+        )
+        self.b_generuj.config(text="Stlačte ENTER / medzerník pre ZASTAVENIE losovania")
+        self._los_tik()
+
+    def _los_tik(self):
+        if self.faza != "generujem":
+            return
+        self.lbl_cislo.config(text=str(random.choice(self.volne_pozicie)))
+        self._job = self.after(self.INTERVAL_MS, self._los_tik)
+
+    def _zastav_losovanie(self):
+        self.faza = None
         if self._job is not None:
             self.after_cancel(self._job)
             self._job = None
-        self.b_generuj.config(text="Spustiť generovanie poradia")
 
-        self.vysledne_poradie = self.kandidati[:]
-        random.shuffle(self.vysledne_poradie)
-        self._zobraz_poradie(self.vysledne_poradie, finalne=True)
+        pozicia = random.choice(self.volne_pozicie)
+        self.volne_pozicie.remove(pozicia)
+        self.priradene[self.aktualny_index] = pozicia
+        k = self.poradie_kandidatov[self.aktualny_index]
+
+        self.lbl_cislo.config(text=str(pozicia))
+        self.txt_vysledok.config(state="normal")
+        self.txt_vysledok.insert("end", f"  {k.cele_meno()}  →  poradové číslo {pozicia}\n")
+        self.txt_vysledok.see("end")
+        self.txt_vysledok.config(state="disabled")
+
+        self.aktualny_index += 1
+        if self.aktualny_index < len(self.poradie_kandidatov):
+            self.l_vyzva.config(
+                text=f"{k.cele_meno()} má číslo {pozicia}. Pripravte ďalšieho kandidáta…",
+                foreground="#0a4",
+            )
+            self.b_generuj.config(text="Pripravujem ďalšieho kandidáta…")
+            self.after(1200, self._priprav_kandidata)
+        else:
+            self.after(900, self._dokonci_volbu)
+
+    def _dokonci_volbu(self):
+        self.volba_aktivna = False
+        self.faza = None
+        self._zamkni_ovladanie(False)
+        self.b_generuj.config(text="Spustiť voľbu poradia")
+        self.lbl_cislo.config(text="–")
         self.l_vyzva.config(
-            text="Generovanie ukončené. Výsledné poradie vystúpenia je zobrazené nižšie.",
+            text="Voľba poradia ukončená. Výsledné poradie vystúpenia je zobrazené nižšie.",
             foreground="#0a4",
         )
+        self._zobraz_finalne()
 
-    def _zobraz_poradie(self, poradie, finalne: bool):
+    def _zobraz_finalne(self):
+        mapovanie = {
+            poz: self.poradie_kandidatov[idx] for idx, poz in self.priradene.items()
+        }
         self.txt_vysledok.config(state="normal")
         self.txt_vysledok.delete("1.0", "end")
-        if finalne:
-            self.txt_vysledok.insert("end", "VÝSLEDNÉ PORADIE VYSTÚPENIA:\n\n")
-        for i, k in enumerate(poradie, start=1):
-            self.txt_vysledok.insert("end", f"{i}. {k.cele_meno()}\n")
+        self.txt_vysledok.insert("end", "VÝSLEDNÉ PORADIE VYSTÚPENIA:\n\n")
+        for poz in range(1, len(self.poradie_kandidatov) + 1):
+            k = mapovanie.get(poz)
+            if k is not None:
+                self.txt_vysledok.insert("end", f"{poz}. {k.cele_meno()}\n")
         self.txt_vysledok.config(state="disabled")
+
+    def _zamkni_ovladanie(self, zamknut: bool):
+        stav = "disabled" if zamknut else "normal"
+        for w in (
+            self.e_tituly_pred,
+            self.e_meno,
+            self.e_priezvisko,
+            self.e_tituly_za,
+            self.b_pridaj,
+            self.b_odstran,
+            self.b_vymaz,
+            self.b_uloz,
+            self.b_nacitaj,
+        ):
+            w.config(state=stav)
 
     # ------------------------------------------------------- aktualizácia
     def _zisti_vzdialenu_verziu(self) -> str:
@@ -434,9 +565,7 @@ class Aplikacia(tk.Tk):
     def aktualizuj_rucne(self):
         """Manuálna aktualizácia po stlačení tlačidla „Aktualizovať program"."""
         self.b_aktualizovat.config(state="disabled")
-        self.l_vyzva.config(
-            text="Kontrolujem dostupnosť aktualizácie...", foreground="#b30000"
-        )
+        self.l_vyzva.config(text="Kontrolujem dostupnosť aktualizácie...", foreground="#b30000")
 
         def worker():
             try:
