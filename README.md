@@ -3,11 +3,13 @@
 Program na náhodné určenie **poradia vystúpenia kandidátov na dekana**.
 
 ## Funkcie
-- Zadávanie kandidátov: **titul(y), meno, priezvisko** (tlačidlo „Pridať kandidáta").
+- Zadávanie kandidátov: **titul(y) pred menom, meno, priezvisko, titul(y) za priezviskom** (tlačidlo „Pridať kandidáta"). Celé meno sa zobrazí v tvare `doc. Ing. Peter Novák, PhD.`.
 - Zoznam sa automaticky zoraďuje **abecedne podľa priezviska** + výzva, aby kandidáti pristúpili v abecednom poradí.
-- Veľké tlačidlo: **1. stlačenie spustí** náhodné losovanie poradia (animácia), **2. stlačenie ho ukončí** a zobrazí finálne poradie vystúpenia.
+- **Žrebovanie poradia po jednotlivých kandidátoch:** každý kandidát (v abecednom poradí) príde a stlačí **ENTER alebo medzerník** na spustenie losovania svojej pozície a opätovným stlačením **ENTER/medzerníka** losovanie zastaví — vylosuje sa mu poradové číslo. Takto sa vystrieda každý kandidát, kým nemajú všetci pridelené poradie.
 - Podmienka: kandidáti musia byť **minimálne dvaja**.
 - Možnosť odstrániť vybraného kandidáta alebo vymazať všetkých.
+- **Uloženie a opätovné načítanie** zoznamu kandidátov + automatické zapamätanie medzi spusteniami.
+- Tlačidlo **„Aktualizovať program"** a automatická kontrola novej verzie pri štarte.
 
 ## Spustenie zo zdrojového kódu
 Potrebuješ Python 3.10+ s knižnicou Tkinter (štandardná súčasť inštalácie z [python.org](https://www.python.org/)).
