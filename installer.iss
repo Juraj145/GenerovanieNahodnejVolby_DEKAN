@@ -35,7 +35,7 @@ Name: "slovak"; MessagesFile: "compiler:Languages\Slovak.isl"
 Name: "desktopicon"; Description: "Vytvoriť ikonu na ploche"; GroupDescription: "Doplnkové úlohy:"
 
 [Files]
-Source: "dist\VolbaPoradiaDekana.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "dist\VolbaPoradiaDekana\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
