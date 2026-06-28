@@ -18,16 +18,21 @@ Potrebuješ Python 3.10+ s knižnicou Tkinter (štandardná súčasť inštalác
 python volba_poradia.py
 ```
 
-## Zostavenie .exe (Windows)
+## Inštalácia (odporúčané)
+Stiahni a spusti inštalátor z [Releases](https://github.com/Juraj145/GenerovanieNahodnejVolby_DEKAN/releases/latest):
+`VolbaPoradiaDekana_Setup.exe` — nainštaluje program a vytvorí ikonu v Štart menu aj na ploche.
+
+Prenosná verzia bez inštalácie: stiahni `VolbaPoradiaDekana_portable.zip`, rozbaľ a spusti `VolbaPoradiaDekana.exe` v rozbalenom priečinku.
+
+## Zostavenie programu (Windows)
 Dvojklikom spusti `build.bat`, alebo ručne:
 
 ```
-python -m pip install pyinstaller
-python -m PyInstaller --noconfirm --onefile --windowed --name "VolbaPoradiaDekana" volba_poradia.py
+python -m pip install pyinstaller certifi
+python -m PyInstaller --noconfirm --onedir --windowed --icon app.ico --add-data "app.ico;." --name "VolbaPoradiaDekana" volba_poradia.py
 ```
 
-Hotový súbor sa objaví v `dist\VolbaPoradiaDekana.exe`.
+Program sa objaví v `dist\VolbaPoradiaDekana\VolbaPoradiaDekana.exe` (priečinok obsahuje aj potrebné knižnice — „onedir" balenie, ktoré sa vyhne chybe *Failed to load Python DLL*).
 
 ## Automatické zostavenie cez GitHub Actions
-Pri každom pushnutí do vetvy `main` (alebo manuálnym spustením workflow „Build Windows EXE" v záložke **Actions**) sa `.exe` zostaví automaticky.
-Hotový súbor stiahneš z danej akcie v sekcii **Artifacts** ako `VolbaPoradiaDekana`.
+Pri každom pushnutí do vetvy `main` (alebo manuálnym spustením workflow v záložke **Actions**) sa automaticky zostaví inštalátor aj prenosná ZIP verzia a zverejnia sa v [Releases](https://github.com/Juraj145/GenerovanieNahodnejVolby_DEKAN/releases/latest).
